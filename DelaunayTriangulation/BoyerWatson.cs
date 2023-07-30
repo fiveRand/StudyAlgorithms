@@ -6,6 +6,17 @@ using MyDataStructure;
 public static class BoyerWatson
 {
 
+    /// <summary>
+    /// Reference by -
+    /// https://www.youtube.com/watch?v=4ySSsESzw2Y&t=237s&ab_channel=ScottAnderson
+    /// https://www.newcastle.edu.au/__data/assets/pdf_file/0019/22519/23_A-fast-algortithm-for-generating-constrained-Delaunay-triangulations.pdf
+    /// https://github.com/Habrador/Computational-geometry/
+    /// https://www.habrador.com/tutorials/math/
+    /// https://forum.unity.com/threads/programming-tools-constrained-delaunay-triangulation.1066148/
+    /// </summary>
+    /// <param name="points"></param>
+    /// <returns></returns>
+
     public static Mesh GenerateDelaunayMesh(List<Vector2> points)
     {
         var triangles = GenerateDelaunayTriangle(points);
@@ -38,32 +49,43 @@ public static class BoyerWatson
         return results;
     }
 
-    public static Mesh GenerateDelaunayMesh(List<Vector2> points, List<Vector2> constraints,out HalfEdgeData data)
+    public static Mesh GenerateDelaunayMesh(List<Vector2> points, List<List<Vector2>> holes,out HalfEdgeData data)
     {
-        var triangles = GenerateDelaunayTriangle(points, constraints,out data);
+        var triangles = GenerateDelaunayTriangle(points, holes,out data);
         var mesh = Triangle2Mesh(triangles);
         return mesh;
     }
 
 
-    static HashSet<Triangle> GenerateDelaunayTriangle(List<Vector2> startPoints, List<Vector2> constraints,out HalfEdgeData data)
+    static HashSet<Triangle> GenerateDelaunayTriangle(List<Vector2> startPoints, List<List<Vector2>> holes,out HalfEdgeData data)
     {
         var bound = SetBoundary(startPoints);
-        var normalizedPoint = NormalizePoints(startPoints, bound);
-        var constraintedNormalizedPoint = NormalizePoints(constraints, bound);
-        normalizedPoint.AddRange(constraintedNormalizedPoint);
+        List<List<Vector2>> normalizedHoles = new List<List<Vector2>>();
+
+        var allPoints = NormalizePoints(startPoints, bound);
+
+        for (int i = 0; i < holes.Count; i++)
+        {
+            List<Vector2> constraint = holes[i];
+            var normalizedConstraint = NormalizePoints(constraint, bound);
+            normalizedHoles.Add(normalizedConstraint);
+            allPoints.AddRange(normalizedConstraint);
+        }
 
         Triangle superTriangle = new Triangle(new Vector2(-100, -100), new Vector2(0, 100), new Vector2(100, -100));
         List<Triangle> tempTriangles = new List<Triangle> { superTriangle };
         data = new HalfEdgeData();
         data.Update(tempTriangles);
 
-        for (int i = 0; i < normalizedPoint.Count; i++)
+        for (int i = 0; i < allPoints.Count; i++)
         {
-            var point = normalizedPoint[i];
+            var point = allPoints[i];
             OnInsertPoint(point, data);
         }
-        OnConstraints(data, constraintedNormalizedPoint);
+        foreach(var constraint in normalizedHoles)
+        {
+            OnConstraints(data, constraint);
+        }
 
         RemoveSuperTriangle(superTriangle, data);
         UnNormalizePoints(data, bound);
@@ -73,20 +95,26 @@ public static class BoyerWatson
 
     static void OnConstraints(HalfEdgeData data, List<Vector2> constraints)
     {
+
         for (int i = 0; i < constraints.Count; i++)
         {
 
             var edgeStart = constraints[i];
             var edgeEnd = (i == constraints.Count - 1) ? constraints[0] : constraints[i + 1];
 
-            var face = FindpointTriangle(data.faces, edgeStart);
+            var pointEdge = GetEdge(data.faces, edgeStart);
+            
+            var intersectingEdges = FindIntersectingEdges(data.faces,pointEdge,edgeStart,edgeEnd);
 
-            var intersectingEdges = FindIntersectingEdges(data.faces,face,edgeStart,edgeEnd);
+            if(intersectingEdges != null)
+            {
 
-            var FlippedEdges = RemoveIntersectingEdges(data,intersectingEdges, edgeStart, edgeEnd);
-            RestoreDelaunayTriangle(data,FlippedEdges, edgeStart, edgeEnd);
+                var FlippedEdges = RemoveIntersectingEdges(data,intersectingEdges, edgeStart, edgeEnd);
+                RestoreDelaunayTriangle(data,FlippedEdges, edgeStart, edgeEnd);
+            }
+            
         }
-        RemoveConstraint(data,constraints);
+        RemoveConstraint(data, constraints);
     }
 
     static void RemoveConstraint(HalfEdgeData data,List<Vector2> constraints)
@@ -149,7 +177,8 @@ public static class BoyerWatson
 
         foreach(var vertex in data.vertices)
         {
-            if(vertex.position == edgeStart)
+
+            if(isSame(vertex.position,edgeStart))
             {
                 curEdge = vertex.edge;
                 curFace = curEdge.face;
@@ -159,7 +188,7 @@ public static class BoyerWatson
 
         while(true)
         {
-            if(curEdge.v.position == edgeStart)
+            if(isSame(curEdge.v.position,edgeStart))
             {
                 break;
             }
@@ -302,7 +331,7 @@ public static class BoyerWatson
                 var c = curEdge.prevEdge.v.position;
                 var d = curEdge.oppositeEdge.prevEdge.v.position;
 
-                if ((a.Equals(edgeStart) && b.Equals(edgeEnd)) || (b.Equals(edgeStart) && a.Equals(edgeEnd)))
+                if((isSame(edgeStart,a) && isSame(edgeEnd,b)) || (isSame(edgeStart,b) && isSame(edgeEnd,a)))
                 {
                     continue;
                 }
@@ -322,102 +351,85 @@ public static class BoyerWatson
     }
 
 
-    public static Queue<HalfEdge> FindIntersectingEdges(List<HalfEdgeFace> faces,HalfEdgeFace startTriangle ,Vector2 edgeStart,Vector2 edgeEnd)
+    public static Queue<HalfEdge> FindIntersectingEdges(List<HalfEdgeFace> faces,HalfEdge pointEdge ,Vector2 edgeStart,Vector2 edgeEnd)
     {
         Queue<HalfEdge> result = new Queue<HalfEdge>(faces.Count);
         int safety = 0;
-        var curEdge = startTriangle.edge;
-        bool isLeft = false;
 
-        while(!curEdge.v.position.Equals(edgeStart))
+        if (pointEdge == null)
         {
-            curEdge = curEdge.nextEdge;
+            Debug.LogError("This point has been deleted by previous constraint method. Do not place constraint point inside of constraint!");
+            return null;
         }
+        HalfEdgeFace curFace = pointEdge.face;
+        HalfEdge curEdge = pointEdge;
 
-        // 해당 버텍스에 충돌하면 선분이 나올때까지 버텍스를 지점으로 우측방향으로 이동 
-        // 거대한 삼각형 덕에 충돌처리가 잘못될리가 없지만 직접 만든 Mesh로서는 에러가 나올 수 있다
-        // 그래서 우측이 비워져 있다면 좌측방향으로도 살펴보게 만든다
+        // 해당 버텍스에 충돌되는 선분이 나올때까지 버텍스를 지점으로 우측방향으로 회전탐색
+        // 탐색도중 edgeEnd에 도달시 탐색할 중심점으로 저장해둔다
+        // 중심점과 충돌하는 선분이 둘다 나왔으면 정지, 하나라도 안나왔다면 다음 중심점으로 탐색한다
+
+        var startFace = curFace;
         while(true)
         {
             safety++;
-            if (safety > 10)
+            if (safety > 100)
             {
-                Debug.Log("Endless loop while finding triangle to walk");
+                Debug.LogError("Endless loop while finding triangle to walk");
                 break;
             }
 
             var e1 = curEdge;
-            var e2 = curEdge.nextEdge;
-            var e3 = curEdge.prevEdge;
-            if (AreLineIntersecting(curEdge.v.position, curEdge.nextEdge.v.position, edgeStart, edgeEnd, false))
+            var e2 = e1.nextEdge;
+            var e3 = e1.prevEdge;
+
+            if (AreLineIntersecting(e1.v.position, e2.v.position, edgeStart, edgeEnd, false))
             {
-                curEdge = curEdge.oppositeEdge;
+                curEdge = e1.oppositeEdge;
                 break;
             }
-            else if (AreLineIntersecting(curEdge.nextEdge.v.position, curEdge.prevEdge.v.position, edgeStart, edgeEnd, false))
+            else if (AreLineIntersecting(e2.v.position, e3.v.position, edgeStart, edgeEnd, false))
             {
-                curEdge = curEdge.nextEdge.oppositeEdge;
+                curEdge = e2.oppositeEdge;
                 break;
             }
-            else if (AreLineIntersecting(curEdge.prevEdge.v.position, curEdge.v.position, edgeStart, edgeEnd, false))
+            else if (AreLineIntersecting(e3.v.position, e1.v.position, edgeStart, edgeEnd, false))
             {
-                curEdge = curEdge.prevEdge.oppositeEdge;
+                curEdge = e3.oppositeEdge;
                 break;
             }
-            else
+            curEdge = curEdge.prevEdge.oppositeEdge;
+            curFace = curEdge.face;
+
+            if(curFace == startFace) // we searched all face but we didn't found any single intersecting line.
             {
-                
-                if (isLeft && curEdge.oppositeEdge.nextEdge == null)
-                {
-
-                    Debug.LogError("this vertex is empty");
-                    return null;
-                }
-                if(curEdge.prevEdge.oppositeEdge == null)
-                {
-                    isLeft = true;
-                }
-                
-                curEdge = (isLeft) ? curEdge.oppositeEdge.nextEdge : curEdge.prevEdge.oppositeEdge;
-
-
+                return null;
             }
-
         }
 
         result.Enqueue(curEdge);
 
-        safety = 0;
-        
-        while (true)
+        while(true)
         {
-            safety += 1;
-
-            if (safety > 100)
-            {
-                Debug.Log("Endless loop while finding triangle to walk");
-                break;
-            }
-
             var nextEdge = curEdge.nextEdge;
             var prevEdge = curEdge.prevEdge;
 
-            if(AreLineIntersecting(nextEdge.v.position,nextEdge.nextEdge.v.position, edgeStart, edgeEnd, false))
+            if (AreLineIntersecting(nextEdge.v.position, prevEdge.v.position, edgeStart, edgeEnd, false))
             {
                 curEdge = nextEdge.oppositeEdge;
+
             }
-            else if(AreLineIntersecting(prevEdge.v.position, prevEdge.nextEdge.v.position, edgeStart, edgeEnd, false))
+            else if (AreLineIntersecting(prevEdge.v.position, curEdge.v.position, edgeStart, edgeEnd, false))
             {
                 curEdge = prevEdge.oppositeEdge;
+
             }
-            else
+            else // If there's none intersecting edge, then we searched all.
             {
                 break;
             }
             result.Enqueue(curEdge);
-        }
-        
 
+        }
 
         return result;
     }
@@ -568,18 +580,28 @@ public static class BoyerWatson
         // update Face
     }
 
-    public static HalfEdgeFace FindpointTriangle(List<HalfEdgeFace> faces, Vector2 point)
+    public static HalfEdge GetEdge(List<HalfEdgeFace> faces, Vector2 point)
     {
-        HalfEdgeFace result = null;
+        HalfEdge result = null;
         foreach(var face in faces)
         {
             var curEdge = face.edge;
             var nextEdge = curEdge.nextEdge;
             var prevEdge = curEdge.prevEdge;
-
-            if(curEdge.v.position.Equals(point) || nextEdge.v.position.Equals(point) || prevEdge.v.position.Equals(point))
+            if (isSame(curEdge.v.position, point))
             {
-                result = face;
+                result = curEdge;
+                break;
+            }
+            else if (isSame(nextEdge.v.position, point))
+            {
+                result = nextEdge;
+                break;
+            }
+            else if (isSame(prevEdge.v.position, point))
+            {
+                result = prevEdge;
+                break;
             }
         }
         return result;
@@ -963,7 +985,8 @@ public static class BoyerWatson
     public static bool AreLineIntersecting(Vector2 p1v1, Vector2 p1v2, Vector2 p2v1, Vector2 p2v2, bool includeEndPoints)
     {
         bool result = false;
-        if (p1v1.Equals(p2v1) || p1v1.Equals(p2v2) || p1v2.Equals(p2v1) || p1v2.Equals(p2v2))
+
+        if(isSame(p1v1,p2v1) || isSame(p1v1,p2v2) || isSame(p1v2,p2v1) || isSame(p1v2,p2v2))
         {
             return false;
         }

@@ -1,7 +1,8 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
+using System;
+using System.Linq;
 using UnityEngine;
-using MyTriangulation;
 using MyDataStructure;
 # if UNITY_EDITOR
 using UnityEditor;
@@ -11,7 +12,7 @@ public class Triangulator : MonoBehaviour
     public Vector2 gridSize = new Vector2(50, 50);
     public float radius = 4;
     public List<Vector2> points = new List<Vector2>();
-    public List<Vector2> constraints = new List<Vector2>();
+    public List<Transform> constraintParent = new List<Transform>();
     public HalfEdgeData data;
     public HalfEdge curEdge;
     public HalfEdgeFace curFace;
@@ -33,11 +34,18 @@ public class Triangulator : MonoBehaviour
 
 
         Gizmos.color = Color.red;
-        if (constraints.Count > 0)
+        if (constraintParent.Count > 0)
         {
-            foreach (var constraint in constraints)
+            for (int i = 0; i < constraintParent.Count; i++)
             {
-                Gizmos.DrawWireSphere(constraint, 0.5f);
+                var parent = constraintParent[i];
+                parent.name = "ConstraintParent " + i;
+
+                for (int j = 0; j < parent.childCount; j++)
+                {
+                    var child = parent.GetChild(j);
+                    Gizmos.DrawWireSphere(child.position, 0.5f);
+                }
             }
         }
         Gizmos.color = Color.blue;
@@ -105,19 +113,68 @@ public class Triangulator : MonoBehaviour
 
     void Trangulate()
     {
-        mesh = BoyerWatson.GenerateDelaunayMesh(points,constraints,out data);
-        // curEdge = data.edges[0];
+        List<List<Vector2>> holesPoint = new List<List<Vector2>>();
+
+        for (int i = 0; i < constraintParent.Count; i++)
+        {
+            var parent = constraintParent[i];
+            List<Vector2> constraint = GetConstraintPointsFromParent(parent);
+            holesPoint.Add(constraint);
+
+        }
+
+        mesh = BoyerWatson.GenerateDelaunayMesh(points, holesPoint, out data);
+
+
+
         faces = new List<HalfEdgeFace>();
         halfedges = new List<HalfEdge>();
         vertices = new List<HalfEdgeVertex>();
     }
 
+    List<Vector2> GetConstraintPointsFromParent(Transform parent)
+    {
+        List<Vector2> result = new List<Vector2>(parent.childCount);
+        for (int i = 0; i < parent.childCount; i++)
+        {
+            result.Add(parent.GetChild(i).position);
+        }
+        return result;
+    }
+
+    void SortParentClockwise(ref Transform parent)
+    {
+        List<Transform> result = new List<Transform>(parent.childCount);
+        for (int i = 0; i < parent.childCount; i++)
+        {
+            result.Add(parent.GetChild(i));
+        }
+        var points = GetConstraintPointsFromParent(parent);
+        var midX = points.Average(t => t.x);
+        var midY = points.Average(t => t.y);
+        List<Transform> orderedPoints = result.OrderBy(t => -Mathf.Atan2(midY - t.position.y, midX - t.position.x)).ToList();
+    
+
+        for (int i = 0; i < parent.childCount; i++)
+        {
+
+            orderedPoints[i].SetSiblingIndex(i);
+        }
+    }
+
     void Test()
     {
-        
-        faces = BoyerWatson.GetTrianglesInsideOfConstraint(data, constraints,out halfedges);
-        faces = BoyerWatson.FloodFillInsideConstraint(data, faces,halfedges);
-        //vertices = data.vertices;
+
+
+    }
+
+    void SortAllParentClockWise()
+    {
+        for (int i = 0; i < constraintParent.Count; i++)
+        {
+            Transform parent = constraintParent[i];
+            SortParentClockwise(ref parent);
+        }
     }
     void NextEdge()
     {
@@ -188,6 +245,10 @@ public class Triangulator : MonoBehaviour
             if (GUILayout.Button("GetTwin"))
             {
                 script.TwinEdge();
+            }
+            if(GUILayout.Button("SortAllParentClockWise"))
+            {
+                script.SortAllParentClockWise();
             }
 
             if (GUILayout.Button("Test"))
